@@ -1,14 +1,12 @@
 import asyncio
-import websockets
 import json
 import uuid
+import websockets
 
 from ring_manager import RingManager
 from dh_manager import DHManager
 from message_manager import MessageManager
 
-# Стандартні параметри групи (можна замінити на інші)
-# 2048-бітне просте число (безпечне для Diffie-Hellman)
 p = int(
     "25195908475657893494027183240048398571429282126204"
     "03202777713783604366202070759555626401852588078440"
@@ -17,67 +15,71 @@ p = int(
     "97182469116507761337985909570009733045974880842840"
     "17974291006424586918171951187461215151726546322822"
     "16869987549182422433637259085141865462043576798423"
-    "38718477444792073993423658482382428119816381501067"
-    , 10
+    "38718477444792073993423658482382428119816381501067",
+    10
 )
+g = 2
 
-g = 2 
-
-
-clients = []               # [{"id", "socket"}]
-clients_by_id = {}         # { id: websocket }
+clients = []
+clients_by_id = {}
 ring = RingManager()
 dh = DHManager()
 msg_mgr = MessageManager()
+cycle_id = 0
 
-async def send_to(client_id, message: str):
+async def send_to(client_id, obj):
     ws = clients_by_id.get(client_id)
-    if ws:
-        try:
-            await ws.send(message)
-        except:
-            pass
+    if not ws:
+        return
+    try:
+        await ws.send(json.dumps(obj))
+    except:
+        pass
 
-async def broadcast(message, exclude_id=None):
+async def broadcast(obj, exclude_id=None):
+    msg = json.dumps(obj)
     for client in clients:
         if client["id"] != exclude_id:
             try:
-                await client["socket"].send(message)
+                await client["socket"].send(msg)
             except:
                 pass
 
-
 async def broadcast_ring():
-    await broadcast(json.dumps({
+    await broadcast({
         "type": "ring_update",
+        "cycleId": cycle_id,
         "ring": ring.get_ring()
-    }))
+    })
 
-
-async def start_dh_cycle():
-    if not ring.is_ready():
-        print("[DH] Not enough participants for DH cycle")
-        return
-
-    order = ring.get_ring()
-    dh.start_cycle(order)
-
-    print(f"[DH] Started new DH cycle with ring = {order}")
-    
-    await broadcast(json.dumps({
-        "type": "dh_start",
-        "ring": order
-    }))
-
+async def announce_dh_state():
+    if ring.is_ready():
+        order = ring.get_ring()
+        dh.start_cycle(order, cycle_id)
+        await broadcast({
+            "type": "dh_start",
+            "cycleId": cycle_id,
+            "ring": order,
+            "n": len(order)
+        })
+    else:
+        dh.reset(cycle_id)
+        await broadcast({
+            "type": "dh_unavailable",
+            "cycleId": cycle_id,
+            "ring": ring.get_ring(),
+            "minRequired": 3
+        })
 
 async def handle_client(websocket):
-    client_id = str(uuid.uuid4())
+    global cycle_id
 
+    client_id = str(uuid.uuid4())
     clients.append({"id": client_id, "socket": websocket})
     clients_by_id[client_id] = websocket
     ring.add_client(client_id)
 
-    print(f"[JOIN] {client_id}")
+    cycle_id += 1
 
     await websocket.send(json.dumps({
         "type": "welcome",
@@ -90,83 +92,87 @@ async def handle_client(websocket):
         "g": str(g)
     }))
 
-    print(f"[PARAMS] Sent p, g to {client_id}")
-
-    await broadcast(json.dumps({
+    await broadcast({
         "type": "user_joined",
+        "cycleId": cycle_id,
         "id": client_id
-    }), exclude_id=client_id)
+    }, exclude_id=client_id)
 
     await broadcast_ring()
-
-    await start_dh_cycle()
+    await announce_dh_state()
 
     try:
         async for raw_message in websocket:
-            data = json.loads(raw_message)
-            
-            if data["type"] == "message":
-                cipher = data["cipher"]
-                iv = data["iv"]
-
-                print(f"[MSG] From {client_id}: {cipher[:20]}...")
-
-                await msg_mgr.relay(clients, client_id, cipher, iv)
+            try:
+                data = json.loads(raw_message)
+            except:
                 continue
 
-            if data["type"] == "dh_round_value":
-                value = data["value"]
+            msg_type = data.get("type")
 
-                sender = client_id
-                receiver = dh.next_client(sender)
+            if msg_type == "message":
+                msg_cycle = data.get("cycleId")
+                cipher = data.get("cipher")
+                nonce = data.get("nonce")
 
-                print(f"[DH] {sender} → {receiver}: {value}")
-                
-                await send_to(receiver, json.dumps({
+                if msg_cycle != cycle_id or not isinstance(cipher, str) or not isinstance(nonce, str):
+                    continue
+
+                await msg_mgr.relay(clients, client_id, cycle_id, cipher, nonce)
+                continue
+
+            if msg_type == "dh_round_value":
+                msg_cycle = data.get("cycleId")
+                origin = data.get("origin")
+                hop = data.get("hop")
+                value = data.get("value")
+
+                if msg_cycle != cycle_id:
+                    continue
+                if not dh.active or dh.cycle_id != cycle_id:
+                    continue
+                if not isinstance(origin, str):
+                    continue
+                if not isinstance(hop, int):
+                    continue
+                if not isinstance(value, str):
+                    continue
+
+                receiver = dh.next_client(client_id)
+                if not receiver:
+                    continue
+
+                await send_to(receiver, {
                     "type": "dh_next_value",
-                    "from": sender,
+                    "cycleId": cycle_id,
+                    "from": client_id,
+                    "origin": origin,
+                    "hop": hop,
                     "value": value
-                }))
-
-                finished = dh.register_transfer()
-
-                if finished:
-                    print("[DH] Cycle finished.")
-
-                    await broadcast(json.dumps({
-                        "type": "dh_cycle_finished"
-                    }))
-
-                    dh.reset()
+                })
+                continue
 
     except websockets.exceptions.ConnectionClosed:
         pass
 
     finally:
-        print(f"[LEAVE] {client_id}")
+        cycle_id += 1
 
-        global clients
-        clients = [c for c in clients if c["id"] != client_id]
+        clients[:] = [c for c in clients if c["id"] != client_id]
         clients_by_id.pop(client_id, None)
-
         ring.remove_client(client_id)
 
-        await broadcast(json.dumps({
+        await broadcast({
             "type": "user_left",
+            "cycleId": cycle_id,
             "id": client_id
-        }))
+        })
 
         await broadcast_ring()
-        await start_dh_cycle()
-
+        await announce_dh_state()
 
 async def main():
-    print("Server started at ws://localhost:8765")
-    print("Global DH parameters generated:")
-    print("p =", p)
-    print("g =", g)
-
     async with websockets.serve(handle_client, "localhost", 8765):
-        await asyncio.Future() 
+        await asyncio.Future()
 
 asyncio.run(main())

@@ -1,2 +1,3 @@
 export * as diffie from "./diffie-hellman/diffie-hellman";
-export * as AES from "./AES/aes-encryption";
+export * as aesgcm from "./AES/aes-gcm";
+export * as b64 from "./encoding/base64";

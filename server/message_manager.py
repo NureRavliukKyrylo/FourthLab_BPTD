@@ -1,27 +1,18 @@
-# message_manager.py
+import json
 
 class MessageManager:
-    def __init__(self):
-        pass
-
-    async def relay(self, clients, sender_id, cipher, iv):
+    async def relay(self, clients, sender_id, cycle_id, cipher, nonce):
         payload = {
             "type": "message",
             "from": sender_id,
+            "cycleId": cycle_id,
             "cipher": cipher,
-            "iv": iv
+            "nonce": nonce
         }
-
-        msg = json_dumps(payload)
-
+        msg = json.dumps(payload)
         for client in clients:
             if client["id"] != sender_id:
                 try:
                     await client["socket"].send(msg)
                 except:
                     pass
-
-
-def json_dumps(obj):
-    import json
-    return json.dumps(obj)

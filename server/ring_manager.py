@@ -1,5 +1,3 @@
-# ring_manager.py
-
 class RingManager:
     def __init__(self):
         self.ring = []
@@ -16,10 +14,9 @@ class RingManager:
     def next_client(self, client_id: str):
         if client_id not in self.ring:
             return None
-        
         idx = self.ring.index(client_id)
         next_idx = (idx + 1) % len(self.ring)
         return self.ring[next_idx]
 
     def is_ready(self):
-        return len(self.ring) >= 2
+        return len(self.ring) >= 3
