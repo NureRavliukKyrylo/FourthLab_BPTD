@@ -57,7 +57,7 @@ export default function App() {
           <div className="sidebarTop">
             <div className="brandRow">
               <div className="brand">
-                <div className="brandTitle">Secure Group Chat</div>
+                <div className="brandTitle">Laboratory work No4</div>
                 <div className="brandSub">WebSocket · DH (ring) · AES-GCM</div>
               </div>
               <div className={statusDot} />
