@@ -185,6 +185,8 @@ export function useSecureChat(wsUrl: string) {
 
     const pub = diffie.generatePublicKey(gg, priv, pp);
 
+    console.debug("[DH] start", { cycleId: cId, self: cid, participants: count, pub: pub.toString() });
+
     wsSend({
       type: "dh_round_value",
       cycleId: cId,
@@ -197,6 +199,7 @@ export function useSecureChat(wsUrl: string) {
   }
 
   async function finalizeSharedKey(shared: bigint) {
+    console.debug("[DH] sharedKey", shared.toString());
     try {
       const k = await aesgcm.deriveAesGcmKey(shared);
       setAesKeySync(k);
@@ -262,12 +265,27 @@ export function useSecureChat(wsUrl: string) {
       return;
     }
 
+    console.debug("[DH] recv", {
+      cycleId: msg.cycleId,
+      from: msg.from,
+      origin: msg.origin,
+      hop: msg.hop,
+      value: v.toString(),
+    });
+
     if (msg.origin === cid && msg.hop === nn) {
       await finalizeSharedKey(v);
       return;
     }
 
     const nextV = diffie.computeIntermediate(v, priv, pp);
+
+    console.debug("[DH] send", {
+      cycleId: msg.cycleId,
+      origin: msg.origin,
+      hop: msg.hop + 1,
+      value: nextV.toString(),
+    });
 
     wsSend({
       type: "dh_round_value",
